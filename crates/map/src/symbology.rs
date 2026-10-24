@@ -248,15 +248,27 @@ pub enum ClassMethod {
     NaturalBreaks,
     EqualInterval,
     Quantile,
+    /// Class widths that grow by one ratio, for values that pile up at the low end.
+    GeometricInterval,
+    /// Classes one standard deviation wide about the mean.
+    StandardDeviation,
 }
 
 impl ClassMethod {
-    pub const ALL: [ClassMethod; 3] = [ClassMethod::NaturalBreaks, ClassMethod::EqualInterval, ClassMethod::Quantile];
+    pub const ALL: [ClassMethod; 5] = [
+        ClassMethod::NaturalBreaks,
+        ClassMethod::EqualInterval,
+        ClassMethod::Quantile,
+        ClassMethod::GeometricInterval,
+        ClassMethod::StandardDeviation,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             ClassMethod::NaturalBreaks => "Natural Breaks (Jenks)",
             ClassMethod::EqualInterval => "Equal Interval",
             ClassMethod::Quantile => "Quantile",
+            ClassMethod::GeometricInterval => "Geometric Interval",
+            ClassMethod::StandardDeviation => "Standard Deviation",
         }
     }
     pub fn from_name(s: &str) -> Option<ClassMethod> {
@@ -265,6 +277,8 @@ impl ClassMethod {
             "naturalbreaks" | "natural_breaks" | "jenks" | "natural breaks" => ClassMethod::NaturalBreaks,
             "equalinterval" | "equal_interval" | "equal interval" => ClassMethod::EqualInterval,
             "quantile" => ClassMethod::Quantile,
+            "geometricinterval" | "geometric_interval" | "geometric interval" | "geometric" => ClassMethod::GeometricInterval,
+            "standarddeviation" | "standard_deviation" | "standard deviation" | "stddev" => ClassMethod::StandardDeviation,
             _ => return None,
         })
     }
@@ -985,6 +999,21 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
         ClassMethod::EqualInterval => (1..=k).map(|i| lo + (hi - lo) * i as f64 / k as f64).collect::<Vec<_>>(),
         ClassMethod::Quantile => (1..=k).map(|i| sorted.get(((n * i) / k).saturating_sub(1).min(n - 1)).copied().unwrap_or(hi)).collect(),
         ClassMethod::NaturalBreaks => jenks(sorted, k),
+        ClassMethod::GeometricInterval => {
+            // Values from zero or below are shifted so the minimum sits at a hundredth of the range.
+            let shift = if lo > 0.0 { 0.0 } else { (hi - lo) / 100.0 - lo };
+            let ratio = (hi + shift) / (lo + shift);
+            (1..=k).map(|i| (lo + shift) * ratio.powf(i as f64 / k as f64) - shift).collect()
+        }
+        ClassMethod::StandardDeviation => {
+            let mean = sorted.iter().sum::<f64>() / n as f64;
+            let sd = (sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+            // k − 1 inner bounds one deviation apart, centred on the mean; those outside the data
+            // are dropped, so no class is empty.
+            let mut b: Vec<f64> = (1..k).map(|i| mean + sd * (i as f64 - k as f64 / 2.0)).filter(|&v| v > lo && v < hi).collect();
+            b.push(hi);
+            b
+        }
     };
     b.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
     if let Some(l) = b.last_mut() {
@@ -1683,6 +1712,55 @@ mod tests {
         assert_eq!(class_breaks(&v, 3, ClassMethod::EqualInterval).len(), 3);
         assert_eq!(class_breaks(&[], 3, ClassMethod::Quantile), Vec::<f64>::new());
         assert_eq!(class_breaks(&[5.0, 5.0], 4, ClassMethod::NaturalBreaks), vec![5.0]);
+    }
+
+    fn close(a: &[f64], b: &[f64]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9 * y.abs().max(1.0))
+    }
+
+    #[test]
+    fn geometric_interval_breaks_grow_by_one_ratio() {
+        // Positive values: each bound is the one before times (hi / lo)^(1/k).
+        let v = [1.0, 5.0, 40.0, 300.0, 1000.0];
+        let b = class_breaks(&v, 3, ClassMethod::GeometricInterval);
+        assert!(close(&b, &[10.0, 100.0, 1000.0]), "{b:?}");
+        // From zero (or below), the values are shifted so the minimum sits at a hundredth of the
+        // range: the widths still grow by one ratio, and the last bound is the maximum.
+        let b = class_breaks(&[-50.0, 0.0, 50.0], 2, ClassMethod::GeometricInterval);
+        assert!(close(&b, &[-51.0 + 101f64.sqrt(), 50.0]), "{b:?}");
+        let b = class_breaks(&[0.0, 100.0], 4, ClassMethod::GeometricInterval);
+        let widths: Vec<f64> = std::iter::once(b[0]).chain(b.windows(2).map(|w| w[1] - w[0])).collect();
+        assert!(widths.windows(2).all(|w| w[1] > w[0]), "{b:?}");
+        assert_eq!(b.len(), 4);
+        assert_eq!(b.last(), Some(&100.0));
+    }
+
+    #[test]
+    fn standard_deviation_breaks_are_one_deviation_wide_about_the_mean() {
+        // 0..=100: mean 50, population deviation sqrt(850).
+        let v: Vec<f64> = (0..=100).map(f64::from).collect();
+        let sd = 850f64.sqrt();
+        // An even count puts a bound on the mean; an odd one centres a class on it.
+        let b = class_breaks(&v, 4, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[50.0 - sd, 50.0, 50.0 + sd, 100.0]), "{b:?}");
+        let b = class_breaks(&v, 3, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[50.0 - sd / 2.0, 50.0 + sd / 2.0, 100.0]), "{b:?}");
+        // Bounds past the data are dropped rather than leaving empty classes: 8 classes of one
+        // deviation would reach ±4 deviations, but the data spans less than ±2.
+        let b = class_breaks(&v, 8, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[50.0 - sd, 50.0, 50.0 + sd, 100.0]), "{b:?}");
+    }
+
+    #[test]
+    fn every_method_is_listed_named_and_read_back() {
+        for m in ClassMethod::ALL {
+            let name = format!("{m:?}");
+            let camel = format!("{}{}", name[..1].to_ascii_lowercase(), &name[1..]);
+            assert_eq!(ClassMethod::from_name(&camel), Some(m), "{camel}");
+            assert_eq!(ClassMethod::from_name(&m.label().replace(" (Jenks)", "")), Some(m), "{}", m.label());
+        }
+        assert_eq!(ClassMethod::from_name("stddev"), Some(ClassMethod::StandardDeviation));
+        assert_eq!(ClassMethod::from_name("geometric"), Some(ClassMethod::GeometricInterval));
     }
 
     #[test]
