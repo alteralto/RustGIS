@@ -9,11 +9,12 @@ use base64::Engine;
 use rustgis_map::Map;
 use rustgis_map::layout::{ElementKind, FontFamily, Layout, LineHead, PT_PER_MM, TextAlign, frame_camera};
 
-use crate::layout::{PageInfo, expand, render_element};
+use crate::layout::{PageInfo, expand, page_geometry, render_element};
 
 /// Writes `layout` as an SVG document, pictures drawn at `dpi`; `None` when the page can't be drawn.
 pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<String> {
     let (pw, ph) = (layout.width, layout.height);
+    let ppp = page_geometry(layout, dpi).2 / PT_PER_MM;
     let mut s = String::new();
     let _ = write!(
         s,
@@ -106,7 +107,7 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
                     stroke(*outline, *width)
                 );
             }
-            ElementKind::Line { color, width, dir, head } => line(&mut s, dir.ends((x, y, w, h)), *color, *width, *head),
+            ElementKind::Line { color, width, dir, head } => line(&mut s, dir.ends((x, y, w, h)), *color, *width, *head, ppp),
             _ => {
                 if let Some((image, [ix, iy, iw, ih])) = render_element(layout, e.id, maps, dpi, info)? {
                     let png = image.encode_png().ok()?;
@@ -129,8 +130,8 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
 }
 
 /// A line element as the page draws it: a shaft and a filled triangle for each head, in millimetres.
-fn line(s: &mut String, [(x0, y0), (x1, y1)]: [(f64, f64); 2], color: rustgis_map::Rgba, width: f64, head: LineHead) {
-    let w = (width / PT_PER_MM).max(0.5 / PT_PER_MM);
+fn line(s: &mut String, [(x0, y0), (x1, y1)]: [(f64, f64); 2], color: rustgis_map::Rgba, width: f64, head: LineHead, ppp: f64) {
+    let w = (width / PT_PER_MM).max(0.5 / (ppp * PT_PER_MM));
     let (at_start, at_end) = (matches!(head, LineHead::Start | LineHead::Both), matches!(head, LineHead::End | LineHead::Both));
     let len = (x1 - x0).hypot(y1 - y0);
     let heads = f64::from(u8::from(at_start) + u8::from(at_end));
@@ -139,7 +140,7 @@ fn line(s: &mut String, [(x0, y0), (x1, y1)]: [(f64, f64); 2], color: rustgis_ma
     let inset = head_len * 0.8;
     let (sx, sy) = if at_start { (x0 + ux * inset, y0 + uy * inset) } else { (x0, y0) };
     let (ex, ey) = if at_end { (x1 - ux * inset, y1 - uy * inset) } else { (x1, y1) };
-    let _ = writeln!(s, r#"<path d="M{} {}L{} {}" fill="none"{}/>"#, num(sx), num(sy), num(ex), num(ey), stroke(color, width.max(0.5)));
+    let _ = writeln!(s, r#"<path d="M{} {}L{} {}" fill="none"{}/>"#, num(sx), num(sy), num(ex), num(ey), stroke(color, w * PT_PER_MM));
     let half = (head_len * 0.45).max(w);
     for ((tx, ty), (dx, dy)) in
         [(at_start, (x0, y0), (-ux, -uy)), (at_end, (x1, y1), (ux, uy))].into_iter().filter(|h| h.0).map(|h| (h.1, h.2))
@@ -198,8 +199,8 @@ fn esc(t: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            // Control characters other than tab aren't allowed in XML.
-            c if c.is_control() && c != '\t' => {}
+            // Keep text and attributes valid in XML 1.0, including hostile layout names.
+            c if (c.is_control() && c != '\t') || matches!(c, '\u{fffe}' | '\u{ffff}') => {}
             c => out.push(c),
         }
     }
@@ -252,7 +253,9 @@ mod tests {
         );
         base.elements.push(layout.element(legend).unwrap().clone());
         let actual = crate::layout::render(&base, &mut maps, 72.0, &info).unwrap();
-        assert!(actual.data() == expected.data(), "composited SVG pictures match the page");
+        // Drawing onto transparency and compositing rounds the antialias coverage twice.
+        let difference = actual.data().iter().zip(expected.data()).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(difference <= 2, "composited SVG pictures match the page within antialias rounding: {difference}");
     }
 
     #[test]
@@ -303,9 +306,27 @@ mod tests {
     }
 
     #[test]
+    fn thin_lines_use_the_page_renderers_device_pixel_minimum() {
+        let mut layout = Layout::new("Thin lines", 100.0, 80.0);
+        layout.add(
+            "Line",
+            (10.0, 10.0, 30.0, 20.0),
+            serde_json::from_value(serde_json::json!({"Line": {
+                "color": [20, 40, 60, 255], "width": 0.1, "head": "Both"
+            }}))
+            .unwrap(),
+        );
+        for (dpi, stroke_width) in [(36.0, "0.353"), (600.0, "0.026")] {
+            let svg = layout_svg(&layout, &mut [], dpi, &PageInfo::default()).unwrap();
+            assert!(svg.contains(&format!(r#"stroke-width="{stroke_width}""#)), "{dpi} DPI: {svg}");
+        }
+    }
+
+    #[test]
     fn numbers_and_text_are_written_plainly() {
         assert_eq!((num(297.0), num(0.1234), num(-0.0001), num(f64::NAN)), ("297".into(), "0.123".into(), "0".into(), "0".into()));
         assert_eq!(esc("a & <b> \"c\" 'd'\u{1}"), "a &amp; &lt;b&gt; &quot;c&quot; &apos;d&apos;");
+        assert_eq!(esc("valid\u{fffe}\u{ffff}\t🙂"), "valid\t🙂");
         assert_eq!(paint("fill", rustgis_map::Rgba::new(255, 0, 16, 128)), r##" fill="#ff0010" fill-opacity="0.502""##);
         assert_eq!(stroke(rustgis_map::Rgba::rgb(0, 0, 0), 0.0), r#" stroke="none""#);
     }

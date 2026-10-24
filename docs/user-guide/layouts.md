@@ -205,7 +205,7 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   ellipses and lines stay shapes, while map frames and the other surrounds are pictures at the export
   resolution, so the page can be finished in a vector editor. SVG text uses the viewer's
   serif or sans-serif font, so its alignment and line widths can differ from PNG/PDF and can
-  change when edited;
+  change when edited. Embedded pictures are clipped to their element boxes;
   `layout.export` accepts `dpi` and `"allPages": false` for just the current PDF
   page. **Print** opens the PDF in the system viewer on desktop; **Save Layout File** and
   **Import Layout** move layouts between projects (`.rgislayout`).

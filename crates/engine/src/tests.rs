@@ -16022,7 +16022,8 @@ fn a_layout_exports_to_svg_with_each_element_its_own_group() {
     s.map_mut().layers[0].source = Some(source);
     // Use a world view so the missing layer is visible on the exported page.
     s.run("layout.frameZoom", &json!({"to": "full"})).unwrap();
-    assert!(s.run("layout.export", &json!({"path": out.to_string_lossy(), "dpi": 36})).is_err());
+    let error = s.run("layout.export", &json!({"path": out.to_string_lossy(), "dpi": 36})).unwrap_err();
+    assert!(error.contains("map sources"), "{error}");
     assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }

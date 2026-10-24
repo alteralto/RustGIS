@@ -58,7 +58,7 @@ pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> O
 }
 
 /// Page pixel dimensions and the shared millimetre scale, capped to the renderer's budget.
-fn page_geometry(layout: &Layout, dpi: f64) -> (u32, u32, f64) {
+pub(crate) fn page_geometry(layout: &Layout, dpi: f64) -> (u32, u32, f64) {
     let ppp = (if dpi.is_finite() { dpi } else { 96.0 } / 96.0).clamp(0.25, 8.0);
     let k = PT_PER_MM * ppp;
     let k = k.min((MAX_PIXELS / (layout.width * layout.height).max(1.0)).sqrt());
