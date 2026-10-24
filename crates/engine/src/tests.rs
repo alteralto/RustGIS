@@ -1206,6 +1206,8 @@ fn raster_layers_open_style_identify_and_round_trip() {
     ] {
         s.run("raster.symbology", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
     }
+    // Bounds typed by hand are for Graduated Colors: a raster's classes are worked out.
+    assert!(s.run("raster.symbology", &json!({"type": "classify", "method": "manual"})).is_err());
     assert!(s.run("raster.symbology", &json!({"type": "colormap"})).is_err());
     assert!(s.run("raster.symbology", &json!({"band": 9})).is_err());
     s.run("raster.bands", &json!({"red": 3, "green": 2, "blue": 1})).unwrap();

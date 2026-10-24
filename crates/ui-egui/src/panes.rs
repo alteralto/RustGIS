@@ -3897,6 +3897,51 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     );
 }
 
+/// Graduated Colors' bounds typed by hand: each class's upper bound as a number, a button to take
+/// a bound out, and one to split the widest class in two. A bound being dragged or typed is held
+/// here and applied once, when the drag stops or the field is left, so a drag is one undo step.
+fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64], min: f64, ramp: &Ramp) {
+    let mut b = breaks.to_vec();
+    let speed = ((b.last().copied().unwrap_or(min) - min).abs() / 200.0).max(1e-9);
+    let mut apply = false;
+    let mut remove = None;
+    for (i, v) in b.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let id = egui::Id::unique(("manual-break", field, i));
+            if let Some(held) = ui.data(|d| d.get_temp::<f64>(id)) {
+                *v = held;
+            }
+            let input_label = ui.label(crate::i18n::fmt("Class {n} up to", &[("n", &(i + 1).to_string())]));
+            let r = ui.add(egui::DragValue::new(v).speed(speed)).labelled_by(input_label.id);
+            if r.changed() {
+                ui.data_mut(|d| d.insert_temp(id, *v));
+            }
+            if (r.drag_stopped() || r.lost_focus()) && ui.data(|d| d.get_temp::<f64>(id)).is_some() {
+                ui.data_mut(|d| d.remove_temp::<f64>(id));
+                apply = true;
+            }
+            if breaks.len() > 1 && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        b.remove(i);
+        apply = true;
+    }
+    if b.len() < 12 && ui.button(tl!("Split the widest class")).clicked() {
+        let lower = |i: usize| if i == 0 { min } else { b[i - 1] };
+        if let Some(i) = (0..b.len()).max_by(|&x, &y| (b[x] - lower(x)).total_cmp(&(b[y] - lower(y)))) {
+            b.insert(i, (lower(i) + b[i]) / 2.0);
+            apply = true;
+        }
+    }
+    if apply {
+        let _ =
+            app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": "manual", "breaks": b, "ramp": ramp.name()}));
+    }
+}
+
 fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, g: GeometryType, t: &Tokens) {
     egui::Frame::NONE.fill(t.pane_header).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -5658,38 +5703,5 @@ mod tests {
             h.step();
         }
         assert_eq!(h.state().session.revision, rev, "the menu ran a command on every frame");
-    }
-}
-
-/// Graduated Colors' bounds typed by hand: each class's upper bound as a number, a button to take
-/// a bound out, and one to split the widest class in two.
-fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64], min: f64, ramp: &Ramp) {
-    let mut b = breaks.to_vec();
-    let speed = ((b.last().copied().unwrap_or(min) - min).abs() / 200.0).max(1e-9);
-    let mut changed = false;
-    let mut remove = None;
-    for (i, v) in b.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            let input_label = ui.label(crate::i18n::fmt("Class {n} up to", &[("n", &(i + 1).to_string())]));
-            changed |= ui.add(egui::DragValue::new(v).speed(speed)).labelled_by(input_label.id).changed();
-            if breaks.len() > 1 && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        b.remove(i);
-        changed = true;
-    }
-    if b.len() < 12 && ui.button(tl!("Split the widest class")).clicked() {
-        let lower = |i: usize| if i == 0 { min } else { b[i - 1] };
-        if let Some(i) = (0..b.len()).max_by(|&x, &y| (b[x] - lower(x)).total_cmp(&(b[y] - lower(y)))) {
-            b.insert(i, (lower(i) + b[i]) / 2.0);
-            changed = true;
-        }
-    }
-    if changed {
-        let _ =
-            app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": "manual", "breaks": b, "ramp": ramp.name()}));
     }
 }
