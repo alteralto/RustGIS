@@ -1000,16 +1000,30 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
         ClassMethod::Quantile => (1..=k).map(|i| sorted.get(((n * i) / k).saturating_sub(1).min(n - 1)).copied().unwrap_or(hi)).collect(),
         ClassMethod::NaturalBreaks => jenks(sorted, k),
         ClassMethod::GeometricInterval => {
-            // Values from zero or below are taken as if the minimum sat at a hundredth of the range.
-            // The bounds are offsets from the minimum, so a large shift isn't added and taken away
-            // again (it would round off far from zero).
-            let base = if lo > 0.0 { lo } else { (hi - lo) / 100.0 };
-            let ratio = (base + hi - lo) / base;
-            (1..=k).map(|i| lo + base * (ratio.powf(i as f64 / k as f64) - 1.0)).collect()
+            // Positive values: each bound is the one before times (hi / lo)^(1/k), worked out on
+            // logarithms. Values from zero or below are taken as if the minimum sat at a hundredth
+            // of the range, which makes the ratio 101^(1/k); each bound is then a share of the way
+            // from lo to hi. Neither adds large values, so the bounds stay finite and in order.
+            let range = hi - lo;
+            (1..=k)
+                .map(|i| {
+                    let f = i as f64 / k as f64;
+                    let v = if lo > 0.0 {
+                        (lo.ln() + (hi.ln() - lo.ln()) * f).exp()
+                    } else {
+                        let t = (101f64.powf(f) - 1.0) / 100.0;
+                        if range.is_finite() { lo + range * t } else { lo * (1.0 - t) + hi * t }
+                    };
+                    v.clamp(lo, hi)
+                })
+                .collect()
         }
         ClassMethod::StandardDeviation => {
-            let mean = sorted.iter().sum::<f64>() / n as f64;
-            let sd = (sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+            // On values scaled by the largest magnitude, so the squares can't overflow.
+            let s = lo.abs().max(hi.abs());
+            let mean_s = sorted.iter().map(|v| v / s).sum::<f64>() / n as f64;
+            let mean = mean_s * s;
+            let sd = s * (sorted.iter().map(|v| (v / s - mean_s).powi(2)).sum::<f64>() / n as f64).sqrt();
             // k − 1 inner bounds one deviation apart, centred on the mean. A bound with no value
             // above the one before it is dropped, so no class is empty.
             let inner = (1..k).map(|i| mean + sd * (i as f64 - k as f64 / 2.0)).filter(|&v| v > lo && v < hi);
@@ -1747,6 +1761,11 @@ mod tests {
         let b = class_breaks(&[-1e16, -9_999_999_999_999_998.0], 2, ClassMethod::GeometricInterval);
         assert!(b.iter().all(|v| v.is_finite()), "{b:?}");
         assert_eq!(b.last(), Some(&-9_999_999_999_999_998.0));
+        // Near the largest float nothing overflows: the bounds stay finite and in order.
+        for v in [[1e308, 1.1e308], [-1e308, 1e308], [1e-308, 1e308]] {
+            let b = class_breaks(&v, 2, ClassMethod::GeometricInterval);
+            assert!(b.len() == 2 && b.iter().all(|x| x.is_finite()) && b[0] >= v[0] && b[0] < b[1], "{v:?}: {b:?}");
+        }
     }
 
     #[test]
@@ -1767,6 +1786,11 @@ mod tests {
         // (4, 4 + sqrt(24)] would hold nothing between the zeros and the tens.
         let b = class_breaks(&[0.0, 0.0, 0.0, 10.0, 10.0], 4, ClassMethod::StandardDeviation);
         assert!(close(&b, &[4.0, 10.0]), "{b:?}");
+        // Large values: the squared deviations would overflow without scaling.
+        let b = class_breaks(&[1e160, 2e160], 2, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[1.5e160, 2e160]), "{b:?}");
+        let b = class_breaks(&[-1e308, 1e308], 2, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[0.0, 1e308]), "{b:?}");
     }
 
     #[test]
