@@ -15369,7 +15369,8 @@ fn manual_breaks_are_the_ones_given() {
     s.run("layer.symbology", &p).unwrap();
     assert_eq!(breaks(&s), (vec![2e7, max], ClassMethod::Manual));
     // Manual with no bounds keeps the layer's current ones, so switching to it changes nothing.
-    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "quantile", "classes": 4})).unwrap();
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "quantile", "classes": 4}))
+        .unwrap();
     let q = breaks(&s).0;
     s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "manual"})).unwrap();
     assert_eq!(breaks(&s), (q, ClassMethod::Manual));

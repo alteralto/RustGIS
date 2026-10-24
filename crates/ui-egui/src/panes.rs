@@ -3498,7 +3498,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             );
             legend_list(app, ui, &l, t);
         }
-        Renderer::Graduated { field, breaks, ramp, method, .. } => {
+        Renderer::Graduated { field, breaks, ramp, method, min, .. } => {
             field_combo(app, ui, "Field", field, &numeric, "graduated");
             ui.horizontal(|ui| {
                 let input_label = ui.label(tl!("Method"));
@@ -3510,16 +3510,20 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     }
                 }).response.labelled_by(input_label.id);
             });
-            ui.horizontal(|ui| {
-                let input_label = ui.label(tl!("Classes"));
-                let mut k = breaks.len();
-                if ui.add(egui::DragValue::new(&mut k).range(1..=12)).labelled_by(input_label.id).changed() {
-                    let _ = app.run(
-                        "layer.symbology",
-                        json!({"type": "graduated", "field": field, "method": format!("{method:?}"), "classes": k, "ramp": ramp.name()}),
-                    );
-                }
-            });
+            if *method == ClassMethod::Manual {
+                manual_breaks(app, ui, field, breaks, *min, ramp);
+            } else {
+                ui.horizontal(|ui| {
+                    let input_label = ui.label(tl!("Classes"));
+                    let mut k = breaks.len();
+                    if ui.add(egui::DragValue::new(&mut k).range(1..=12)).labelled_by(input_label.id).changed() {
+                        let _ = app.run(
+                            "layer.symbology",
+                            json!({"type": "graduated", "field": field, "method": format!("{method:?}"), "classes": k, "ramp": ramp.name()}),
+                        );
+                    }
+                });
+            }
             ramp_picker(app, ui, ramp, t);
             ui.add_space(6.0);
             legend_list(app, ui, &l, t);
@@ -4767,7 +4771,8 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     .selected_text(tl!(method.label()))
                     .width(180.0)
                     .show_ui(ui, |ui| {
-                        for mm in ClassMethod::ALL {
+                        // Manual bounds are for Graduated Colors; a raster's are worked out.
+                        for mm in ClassMethod::ALL.into_iter().filter(|m| *m != ClassMethod::Manual) {
                             if ui.selectable_label(mm == m, tl!(mm.label())).clicked() {
                                 let _ = app.run(
                                     "raster.symbology",
@@ -5653,5 +5658,38 @@ mod tests {
             h.step();
         }
         assert_eq!(h.state().session.revision, rev, "the menu ran a command on every frame");
+    }
+}
+
+/// Graduated Colors' bounds typed by hand: each class's upper bound as a number, a button to take
+/// a bound out, and one to split the widest class in two.
+fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64], min: f64, ramp: &Ramp) {
+    let mut b = breaks.to_vec();
+    let speed = ((b.last().copied().unwrap_or(min) - min).abs() / 200.0).max(1e-9);
+    let mut changed = false;
+    let mut remove = None;
+    for (i, v) in b.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let input_label = ui.label(crate::i18n::fmt("Class {n} up to", &[("n", &(i + 1).to_string())]));
+            changed |= ui.add(egui::DragValue::new(v).speed(speed)).labelled_by(input_label.id).changed();
+            if breaks.len() > 1 && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        b.remove(i);
+        changed = true;
+    }
+    if b.len() < 12 && ui.button(tl!("Split the widest class")).clicked() {
+        let lower = |i: usize| if i == 0 { min } else { b[i - 1] };
+        if let Some(i) = (0..b.len()).max_by(|&x, &y| (b[x] - lower(x)).total_cmp(&(b[y] - lower(y)))) {
+            b.insert(i, (lower(i) + b[i]) / 2.0);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ =
+            app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": "manual", "breaks": b, "ramp": ramp.name()}));
     }
 }
