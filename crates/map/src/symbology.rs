@@ -1102,7 +1102,8 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
             b
         }
     };
-    b.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+    // Equal bounds, to rounding: relative to their size, so tiny values keep distinct bounds.
+    b.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON * a.abs().max(b.abs()));
     if let Some(l) = b.last_mut() {
         *l = hi;
     }
@@ -1854,6 +1855,16 @@ mod tests {
         assert!(close(&b, &[1.5e160, 2e160]), "{b:?}");
         let b = class_breaks(&[-1e308, 1e308], 2, ClassMethod::StandardDeviation);
         assert!(close(&b, &[0.0, 1e308]), "{b:?}");
+    }
+
+    #[test]
+    fn tiny_values_keep_their_classes() {
+        // Bounds closer than f64::EPSILON in absolute terms are still distinct when the values
+        // themselves are that small.
+        for m in ClassMethod::ALL {
+            let b = class_breaks(&[0.0, 1e-18], 2, m);
+            assert!(b.len() == 2 && b[0] >= 0.0 && b[0] < b[1], "{m:?}: {b:?}");
+        }
     }
 
     #[test]
