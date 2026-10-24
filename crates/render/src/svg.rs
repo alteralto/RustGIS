@@ -9,7 +9,7 @@ use base64::Engine;
 use rustgis_map::Map;
 use rustgis_map::layout::{ElementKind, FontFamily, Layout, LineHead, PT_PER_MM, TextAlign, frame_camera};
 
-use crate::layout::{PageInfo, expand, render};
+use crate::layout::{PageInfo, expand, render_element};
 
 /// Writes `layout` as an SVG document, pictures drawn at `dpi`; `None` when the page can't be drawn.
 pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<String> {
@@ -108,14 +108,15 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
             }
             ElementKind::Line { color, width, dir, head } => line(&mut s, dir.ends((x, y, w, h)), *color, *width, *head),
             _ => {
-                if let Some(png) = alone(layout, e.id, maps, dpi, info) {
+                if let Some((image, [ix, iy, iw, ih])) = render_element(layout, e.id, maps, dpi, info)? {
+                    let png = image.encode_png().ok()?;
                     let _ = writeln!(
                         s,
                         r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#,
-                        num(x),
-                        num(y),
-                        num(w),
-                        num(h),
+                        num(ix),
+                        num(iy),
+                        num(iw),
+                        num(ih),
                         base64::engine::general_purpose::STANDARD.encode(png)
                     );
                 }
@@ -125,24 +126,6 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
     }
     s.push_str("</svg>\n");
     Some(s)
-}
-
-/// The element `id` drawn alone on the page at `dpi`, cut to its frame, as PNG.
-fn alone(layout: &Layout, id: u32, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<Vec<u8>> {
-    let mut solo = layout.clone();
-    for e in &mut solo.elements {
-        e.visible = e.id == id;
-    }
-    let e = layout.element(id)?;
-    let page = render(&solo, maps, dpi, info)?;
-    // Pixels per millimetre, as the page came out (a page too large draws at less).
-    let k = f64::from(page.width()) / layout.width.max(1e-9);
-    let x0 = (e.x * k).floor().clamp(0.0, f64::from(page.width()));
-    let y0 = (e.y * k).floor().clamp(0.0, f64::from(page.height()));
-    let x1 = ((e.x + e.w) * k).ceil().clamp(0.0, f64::from(page.width()));
-    let y1 = ((e.y + e.h) * k).ceil().clamp(0.0, f64::from(page.height()));
-    let rect = tiny_skia::IntRect::from_xywh(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32)?;
-    page.clone_rect(rect)?.encode_png().ok()
 }
 
 /// A line element as the page draws it: a shaft and a filled triangle for each head, in millimetres.
@@ -226,6 +209,98 @@ fn esc(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small page with a frame whose context is also used by surrounds.
+    fn page() -> (Layout, Vec<Map>, u32) {
+        let mut layout = Layout::new("SVG", 100.0, 80.0);
+        let kind = serde_json::from_value(serde_json::json!({"MapFrame": {
+            "map": "Map", "center": {"x": 0, "y": 0}, "scale": 100000000
+        }}))
+        .unwrap();
+        let frame = layout.add("Map", (0.0, 0.0, 100.0, 80.0), kind);
+        (layout, vec![Map::new("Map")], frame)
+    }
+
+    #[test]
+    fn embedded_surrounds_preserve_transparency_and_page_context() {
+        let (mut layout, mut maps, frame) = page();
+        let legend = layout.add(
+            "Legend",
+            (10.0, 10.0, 40.0, 30.0),
+            ElementKind::Legend { frame, title: "Map legend".into(), all_classes: true, hide_other: false, exclude: vec![] },
+        );
+        let info = PageInfo::default();
+        let svg = layout_svg(&layout, &mut maps, 72.0, &info).unwrap();
+        let group = svg.split(&format!("<g id=\"element-{legend}\"")).nth(1).unwrap();
+        let encoded = group.split("data:image/png;base64,").nth(1).unwrap().split('"').next().unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let pm = tiny_skia::Pixmap::decode_png(&bytes).unwrap();
+        assert!(pm.pixels().iter().any(|p| p.alpha() == 0), "no opaque page behind the legend");
+        assert!(pm.pixels().iter().any(|p| p.alpha() > 0), "the title still uses the frame context");
+        let (mut base, mut maps, _) = page();
+        let mut expected = crate::layout::render(&base, &mut maps, 72.0, &info).unwrap();
+        assert!(pm.width() < expected.width() / 2 && pm.height() < expected.height() / 2, "only the surround's bounds are allocated");
+        let (image, [x, y, ..]) = render_element(&layout, legend, &mut maps, 72.0, &info).unwrap().unwrap();
+        let k = PT_PER_MM * 72.0 / 96.0;
+        expected.draw_pixmap(
+            (x * k).round() as i32,
+            (y * k).round() as i32,
+            image.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        base.elements.push(layout.element(legend).unwrap().clone());
+        let actual = crate::layout::render(&base, &mut maps, 72.0, &info).unwrap();
+        assert!(actual.data() == expected.data(), "composited SVG pictures match the page");
+    }
+
+    #[test]
+    fn cropped_images_use_their_actual_pixel_bounds() {
+        let (mut layout, mut maps, _) = page();
+        let id = layout.add("Picture", (-5.3, 70.2, 20.7, 20.0), ElementKind::Picture { image: String::new() });
+        let info = PageInfo::default();
+        let (pm, bounds) = render_element(&layout, id, &mut maps, 36.0, &info).unwrap().unwrap();
+        let [x, y, w, h] = bounds;
+        let k = PT_PER_MM * 36.0 / 96.0;
+        assert_eq!(x, 0.0);
+        assert!((y * k - (70.2 * k).floor()).abs() < 1e-9);
+        assert!((w * k - f64::from(pm.width())).abs() < 1e-9);
+        assert!((h * k - f64::from(pm.height())).abs() < 1e-9);
+        let svg = layout_svg(&layout, &mut maps, 36.0, &info).unwrap();
+        assert!(svg.contains(&format!(r#"<image x="{}" y="{}" width="{}" height="{}""#, num(x), num(y), num(w), num(h))));
+        layout.element_mut(id).unwrap().x = 110.0;
+        assert!(render_element(&layout, id, &mut maps, 36.0, &info).unwrap().is_none());
+        assert!(layout_svg(&layout, &mut maps, 36.0, &info).is_some(), "an off-page image is harmless");
+    }
+
+    #[test]
+    fn failed_required_map_render_fails_the_svg_export() {
+        use rustgis_data::{Dataset, GeometryType};
+        let (layout, mut maps, _) = page();
+        maps[0].add_dataset(Dataset::new("Missing", GeometryType::Point, vec![]));
+        let dir = tempfile::tempdir().unwrap();
+        let mut source = rustgis_map::source::SourceLayer::default();
+        source.path = Some(dir.path().join("missing.shp").display().to_string());
+        maps[0].layers[0].source = Some(source);
+        assert!(layout_svg(&layout, &mut maps, 72.0, &PageInfo::default()).is_none());
+    }
+
+    #[test]
+    fn line_heads_remain_vector_paths() {
+        let mut layout = Layout::new("Arrows", 100.0, 80.0);
+        layout.add(
+            "Arrow",
+            (10.0, 10.0, 30.0, 20.0),
+            serde_json::from_value(serde_json::json!({"Line": {
+                "color": [20, 40, 60, 255], "width": 2.0, "head": "Both"
+            }}))
+            .unwrap(),
+        );
+        let svg = layout_svg(&layout, &mut [], 72.0, &PageInfo::default()).unwrap();
+        assert_eq!(svg.matches("<path ").count(), 3, "shaft and two arrowheads");
+        assert!(!svg.contains("<image"));
+    }
 
     #[test]
     fn numbers_and_text_are_written_plainly() {
