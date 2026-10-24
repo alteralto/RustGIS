@@ -3528,7 +3528,8 @@ fn layouts_compose_export_and_round_trip() {
     assert!(pdf.windows(count.len()).any(|w| w == count.as_bytes()), "one PDF page per series page");
     assert_eq!(s.project.layouts[0].series.as_ref().unwrap().page, 1, "the shown page is restored");
     assert_eq!(scale_of(&s), 3_000_000.0, "and so is the frame's zoom");
-    assert!(s.run("layout.export", &json!({"path": dir.join("x.svg").display().to_string()})).is_err());
+    // A format the export has no writer for is refused.
+    assert!(s.run("layout.export", &json!({"path": dir.join("x.tiff").display().to_string()})).is_err());
     // Layout files.
     let file = dir.join("europe.rgislayout");
     s.run("layout.save", &json!({"path": file.display().to_string()})).unwrap();
