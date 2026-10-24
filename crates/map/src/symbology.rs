@@ -1102,8 +1102,10 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
             b
         }
     };
-    // Equal bounds, to rounding: relative to their size, so tiny values keep distinct bounds.
-    b.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON * a.abs().max(b.abs()));
+    // Only bounds that are the same value: any tolerance merges distinct values somewhere (tiny
+    // ones under an absolute one, large ones under a relative one). Repeated bounds come from
+    // repeated values (quantiles, Jenks), so they are equal exactly.
+    b.dedup();
     if let Some(l) = b.last_mut() {
         *l = hi;
     }
@@ -1858,13 +1860,16 @@ mod tests {
     }
 
     #[test]
-    fn tiny_values_keep_their_classes() {
+    fn close_values_keep_their_classes() {
         // Bounds closer than f64::EPSILON in absolute terms are still distinct when the values
         // themselves are that small.
         for m in ClassMethod::ALL {
             let b = class_breaks(&[0.0, 1e-18], 2, m);
             assert!(b.len() == 2 && b[0] >= 0.0 && b[0] < b[1], "{m:?}: {b:?}");
         }
+        // And close values far from zero keep theirs too.
+        let b = class_breaks(&[1e16, 1e16 + 2.0], 2, ClassMethod::Quantile);
+        assert_eq!(b, vec![1e16, 1e16 + 2.0]);
     }
 
     #[test]
