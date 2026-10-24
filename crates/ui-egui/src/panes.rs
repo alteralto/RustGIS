@@ -3905,9 +3905,10 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
     let speed = ((b.last().copied().unwrap_or(min) - min).abs() / 200.0).max(1e-9);
     let mut apply = false;
     let mut remove = None;
+    let (layer, last) = (app.session.active_layer, b.len().saturating_sub(1));
     for (i, v) in b.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            let id = egui::Id::unique(("manual-break", field, i));
+            let id = egui::Id::unique(("manual-break", layer, field, i));
             if let Some(held) = ui.data(|d| d.get_temp::<f64>(id)) {
                 *v = held;
             }
@@ -3920,7 +3921,9 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
                 ui.data_mut(|d| d.remove_temp::<f64>(id));
                 apply = true;
             }
-            if breaks.len() > 1 && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
+            // The last bound closes the classes at the field's largest value: taking it out would
+            // only bring it back.
+            if i < last && ui.small_button("×").on_hover_text(tl!("Take this bound out")).clicked() {
                 remove = Some(i);
             }
         });
@@ -3936,9 +3939,11 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
             apply = true;
         }
     }
-    if apply {
-        let _ =
-            app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": "manual", "breaks": b, "ramp": ramp.name()}));
+    if apply
+        && let Err(e) =
+            app.run("layer.symbology", json!({"type": "graduated", "field": field, "method": "manual", "breaks": b, "ramp": ramp.name()}))
+    {
+        app.session.notify(e, true);
     }
 }
 

@@ -15376,6 +15376,10 @@ fn manual_breaks_are_the_ones_given() {
     let q = breaks(&s).0;
     s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "manual"})).unwrap();
     assert_eq!(breaks(&s), (q, ClassMethod::Manual));
+    // Bounds with a method that works them out are refused rather than ignored.
+    let mut p = manual(json!([2e7]));
+    p["method"] = json!("quantile");
+    assert!(s.run("layer.symbology", &p).is_err());
     // Not numbers, none, or more than twelve classes are refused, and the layer keeps its style.
     for bad in [json!([]), json!(["a lot"]), json!((1..=13).map(|i| i as f64 * 1e6).collect::<Vec<_>>())] {
         let before = breaks(&s);

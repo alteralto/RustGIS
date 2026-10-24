@@ -2679,6 +2679,9 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
         Some(_) => return Err("breaks are a list of numbers".into()),
     };
     let method = match ps(p, "method").and_then(ClassMethod::from_name) {
+        Some(m) if m != ClassMethod::Manual && typed.is_some() => {
+            return Err(format!("breaks go with the manual method, not {}", m.label()));
+        }
         Some(m) => m,
         None if typed.is_some() => ClassMethod::Manual,
         None => ClassMethod::default(),
