@@ -15344,3 +15344,39 @@ fn toggling_out_the_only_picked_layer_leaves_none_active() {
     assert!(s.selected_layers().is_empty());
     assert!(s.run("layer.remove", &Value::Null).is_err(), "nothing picked, nothing removed");
 }
+
+#[test]
+fn manual_breaks_are_the_ones_given() {
+    use rustgis_map::{ClassMethod, Renderer};
+    let mut s = world();
+    let breaks = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
+        Renderer::Graduated { breaks, method, .. } => (breaks.clone(), *method),
+        r => panic!("{r:?}"),
+    };
+    let l = s.map().layer_by_name("Countries").unwrap();
+    let fi = l.dataset.field_index("pop_est").unwrap();
+    let max = (0..l.dataset.features.len()).filter_map(|r| l.dataset.value(r, fi).as_f64()).fold(f64::MIN, f64::max);
+    let manual = |b: Value| json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "manual", "breaks": b});
+    // The bounds as typed; the field's maximum closes the last class, so every country has one.
+    s.run("layer.symbology", &manual(json!([1e6, 1e7, 1e8]))).unwrap();
+    assert_eq!(breaks(&s), (vec![1e6, 1e7, 1e8, max], ClassMethod::Manual));
+    // Out of order or repeated, they come back sorted, once.
+    s.run("layer.symbology", &manual(json!([5e7, 1e6, 5e7]))).unwrap();
+    assert_eq!(breaks(&s).0, vec![1e6, 5e7, max]);
+    // "breaks" alone means manual.
+    let mut p = manual(json!([2e7]));
+    p.as_object_mut().unwrap().remove("method");
+    s.run("layer.symbology", &p).unwrap();
+    assert_eq!(breaks(&s), (vec![2e7, max], ClassMethod::Manual));
+    // Manual with no bounds keeps the layer's current ones, so switching to it changes nothing.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "quantile", "classes": 4})).unwrap();
+    let q = breaks(&s).0;
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "method": "manual"})).unwrap();
+    assert_eq!(breaks(&s), (q, ClassMethod::Manual));
+    // Not numbers, none, or more than twelve classes are refused, and the layer keeps its style.
+    for bad in [json!([]), json!(["a lot"]), json!((1..=13).map(|i| i as f64 * 1e6).collect::<Vec<_>>())] {
+        let before = breaks(&s);
+        assert!(s.run("layer.symbology", &manual(bad.clone())).is_err(), "{bad}");
+        assert_eq!(breaks(&s), before);
+    }
+}
