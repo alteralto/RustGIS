@@ -1000,18 +1000,28 @@ pub fn class_breaks(sorted: &[f64], k: usize, method: ClassMethod) -> Vec<f64> {
         ClassMethod::Quantile => (1..=k).map(|i| sorted.get(((n * i) / k).saturating_sub(1).min(n - 1)).copied().unwrap_or(hi)).collect(),
         ClassMethod::NaturalBreaks => jenks(sorted, k),
         ClassMethod::GeometricInterval => {
-            // Values from zero or below are shifted so the minimum sits at a hundredth of the range.
-            let shift = if lo > 0.0 { 0.0 } else { (hi - lo) / 100.0 - lo };
-            let ratio = (hi + shift) / (lo + shift);
-            (1..=k).map(|i| (lo + shift) * ratio.powf(i as f64 / k as f64) - shift).collect()
+            // Values from zero or below are taken as if the minimum sat at a hundredth of the range.
+            // The bounds are offsets from the minimum, so a large shift isn't added and taken away
+            // again (it would round off far from zero).
+            let base = if lo > 0.0 { lo } else { (hi - lo) / 100.0 };
+            let ratio = (base + hi - lo) / base;
+            (1..=k).map(|i| lo + base * (ratio.powf(i as f64 / k as f64) - 1.0)).collect()
         }
         ClassMethod::StandardDeviation => {
             let mean = sorted.iter().sum::<f64>() / n as f64;
             let sd = (sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-            // k − 1 inner bounds one deviation apart, centred on the mean; those outside the data
-            // are dropped, so no class is empty.
-            let mut b: Vec<f64> = (1..k).map(|i| mean + sd * (i as f64 - k as f64 / 2.0)).filter(|&v| v > lo && v < hi).collect();
-            b.push(hi);
+            // k − 1 inner bounds one deviation apart, centred on the mean. A bound with no value
+            // above the one before it is dropped, so no class is empty.
+            let inner = (1..k).map(|i| mean + sd * (i as f64 - k as f64 / 2.0)).filter(|&v| v > lo && v < hi);
+            let mut b = Vec::new();
+            let mut below = 0;
+            for v in inner.chain(std::iter::once(hi)) {
+                let upto = sorted.partition_point(|x| *x <= v);
+                if upto > below {
+                    b.push(v);
+                    below = upto;
+                }
+            }
             b
         }
     };
@@ -1733,6 +1743,10 @@ mod tests {
         assert!(widths.windows(2).all(|w| w[1] > w[0]), "{b:?}");
         assert_eq!(b.len(), 4);
         assert_eq!(b.last(), Some(&100.0));
+        // Far from zero the shift is not added and taken away again, so it can't round off.
+        let b = class_breaks(&[-1e16, -9_999_999_999_999_998.0], 2, ClassMethod::GeometricInterval);
+        assert!(b.iter().all(|v| v.is_finite()), "{b:?}");
+        assert_eq!(b.last(), Some(&-9_999_999_999_999_998.0));
     }
 
     #[test]
@@ -1749,6 +1763,10 @@ mod tests {
         // deviation would reach ±4 deviations, but the data spans less than ±2.
         let b = class_breaks(&v, 8, ClassMethod::StandardDeviation);
         assert!(close(&b, &[50.0 - sd, 50.0, 50.0 + sd, 100.0]), "{b:?}");
+        // A bound with no value above the one before it goes too: mean 4, deviation sqrt(24), so
+        // (4, 4 + sqrt(24)] would hold nothing between the zeros and the tens.
+        let b = class_breaks(&[0.0, 0.0, 0.0, 10.0, 10.0], 4, ClassMethod::StandardDeviation);
+        assert!(close(&b, &[4.0, 10.0]), "{b:?}");
     }
 
     #[test]
