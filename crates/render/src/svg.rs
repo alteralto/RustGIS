@@ -253,7 +253,7 @@ mod tests {
                 "map": "Map", "center": {"x": 0, "y": 0}, "scale": 100000000
             }}))
             .unwrap();
-            layout.add(&format!("Map {i}"), (0.0, 0.0, 841.0, 1189.0), kind);
+            layout.add(format!("Map {i}"), (0.0, 0.0, 841.0, 1189.0), kind);
         }
         layout
     }
