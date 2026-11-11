@@ -229,7 +229,7 @@ fn draw_page(
                 // A frame larger than the page budget is drawn at a lower resolution and scaled up.
                 let fppp = ppp.min((MAX_PIXELS / (fw * fh).max(1.0)).sqrt()).max(0.01);
                 let view = View { width: fw, height: fh, pixels_per_point: fppp, camera: cam, sky: false };
-                let Some((mut frame_pm, attribution)) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording(), pending) else {
+                let Some((mut frame_pm, mut attribution)) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording(), pending) else {
                     if frame_requires_complete(map, &view) {
                         return None;
                     }
@@ -242,9 +242,10 @@ fn draw_page(
                     frame_pm.overflowed() || pm.recorded_cost().saturating_add(frame_pm.recorded_cost()) > crate::vector::max_cost();
                 if frame_pm.is_recording()
                     && too_large
-                    && let Some((pixels, _)) = frame_canvas(map, cam, fw, fh, fppp, false, pending)
+                    && let Some((pixels, credits)) = frame_canvas(map, cam, fw, fh, fppp, false, pending)
                 {
-                    frame_pm = pixels;
+                    // The picture's own credits: a tile source may have come in while it was drawn.
+                    (frame_pm, attribution) = (pixels, credits);
                     if let Some(list) = record.as_deref_mut() {
                         list.push((e.id, e.name.clone()));
                     }

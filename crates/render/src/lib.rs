@@ -6441,21 +6441,39 @@ fn render_exported(map: &mut Map, view: &View) -> Result<Rendered, String> {
     Ok(r)
 }
 
+/// The smallest a credit is drawn to fit beside a layout frame's grid labels, points.
+const MIN_CREDIT_SIZE: f32 = 6.0;
+
 /// The tile layers' credits, small, in the bottom-right corner.
 pub(crate) fn draw_attribution(pm: &mut Canvas, attribution: &[String], ppp: f32) {
     draw_attribution_inset(pm, attribution, ppp, (0.0, 0.0));
 }
 
 /// [`draw_attribution`] `inset` points (from the bottom, from the right) in from the corner: above
-/// and left of what is drawn along those edges, such as a layout frame's grid labels.
-pub(crate) fn draw_attribution_inset(pm: &mut Canvas, attribution: &[String], ppp: f32, (bottom, right): (f32, f32)) {
+/// and left of what is drawn along those edges, such as a layout frame's grid labels. A credit
+/// wider than the room left of the right inset is drawn smaller to fit, down to
+/// [`MIN_CREDIT_SIZE`]; a frame too narrow even for that, or too low to hold the credit above the
+/// bottom inset, gives that inset up and has the credit in the corner, as without one.
+pub(crate) fn draw_attribution_inset(pm: &mut Canvas, attribution: &[String], ppp: f32, inset: (f32, f32)) {
     if attribution.is_empty() {
         return;
     }
+    const SIZE: f32 = 9.0;
     let text = attribution.join(" | ");
-    let size = 9.0;
     let (w, h) = (pm.width() as f32 / ppp, pm.height() as f32 / ppp);
-    let (bottom, right) = (bottom.clamp(0.0, h), right.clamp(0.0, w));
+    // max and min, not clamp, which panics on a NaN bound.
+    let (mut bottom, mut right) = (inset.0.max(0.0).min(h), inset.1.max(0.0).min(w));
+    let full = text::measure(&text, SIZE, false);
+    let mut size = SIZE;
+    if right > 0.0 && full > w - right - 8.0 {
+        size = SIZE * (w - right - 8.0) / full.max(f32::EPSILON);
+        if size.is_nan() || size < MIN_CREDIT_SIZE {
+            (right, size) = (0.0, SIZE);
+        }
+    }
+    if bottom > 0.0 && h - bottom < size * 1.8 {
+        bottom = 0.0;
+    }
     let tw = text::measure(&text, size, false).min(w - right);
     let label = PlacedLabel {
         text,
@@ -6690,6 +6708,44 @@ mod tests {
         let px = pm.pixel(50, 20).unwrap();
         assert_eq!((px.blue(), px.alpha()), (255, 255));
         assert_eq!(pm.pixel(60, 20).unwrap().alpha(), 0);
+    }
+
+    /// The credit placed `inset` points in: its drawn pixels' columns and rows, left to right and
+    /// top to bottom, on a transparent `w` × `h` canvas at a pixel a point.
+    fn credit_extent(w: u32, h: u32, inset: (f32, f32), ppp: f32) -> Option<(u32, u32, u32, u32)> {
+        let mut pm = Pixmap::new(w, h).unwrap();
+        let credit = ["© OpenStreetMap contributors".to_string()];
+        crate::canvas::with_canvas(&mut pm, |c| draw_attribution_inset(c, &credit, ppp, inset));
+        let ink: Vec<(u32, u32)> =
+            (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| pm.pixel(x, y).is_some_and(|p| p.alpha() > 0)).collect();
+        let xs = ink.iter().map(|p| p.0);
+        let ys = ink.iter().map(|p| p.1);
+        Some((xs.clone().min()?, xs.max()?, ys.clone().min()?, ys.max()?))
+    }
+
+    /// The whole credit fits beside the labels it is moved clear of: smaller when the room left of
+    /// them is narrow, in the corner as without them when the frame is too narrow or too low.
+    #[test]
+    fn the_credit_fits_whole_in_the_room_its_inset_leaves() {
+        let full = text::measure("© OpenStreetMap contributors", 9.0, false);
+        let (w, h) = (300, 100);
+        // Room enough: it ends at the right inset and the bottom one at most, at its size (its halo
+        // reaches the bottom one, as it reaches the frame's edge without one).
+        let (_, right, _, bottom) = credit_extent(w, h, (20.0, 40.0), 1.0).unwrap();
+        assert!(right <= w - 40 && bottom <= h - 20, "{right} {bottom}");
+        // Narrower than the credit beside 60 points of labels: drawn smaller, still clear of them and
+        // inside the frame.
+        let narrow = (full + 30.0) as u32;
+        let (left, right, _, _) = credit_extent(narrow, h, (0.0, 60.0), 1.0).unwrap();
+        assert!(right < narrow - 60 && left > 0, "{left} to {right} of {narrow}");
+        // Too narrow for even its smallest size beside them: in the corner, as with no labels.
+        let squeezed = credit_extent(narrow, h, (0.0, narrow as f32 - 10.0), 1.0);
+        assert_eq!(squeezed, credit_extent(narrow, h, (0.0, 0.0), 1.0));
+        // Too low to hold it above a bottom inset: at the bottom, inside the frame.
+        let (_, _, top, bottom) = credit_extent(w, 30, (25.0, 0.0), 1.0).unwrap();
+        assert!(top > 0 && bottom < 30, "{top} {bottom}");
+        // A scale that isn't a number draws nothing sensible but doesn't panic.
+        let _ = credit_extent(w, h, (20.0, 40.0), f32::NAN);
     }
 
     /// An icon's `alpha` fades it (a tile layer's opacity, #1358); out-of-range or non-finite values
