@@ -6443,17 +6443,24 @@ fn render_exported(map: &mut Map, view: &View) -> Result<Rendered, String> {
 
 /// The tile layers' credits, small, in the bottom-right corner.
 pub(crate) fn draw_attribution(pm: &mut Canvas, attribution: &[String], ppp: f32) {
+    draw_attribution_inset(pm, attribution, ppp, (0.0, 0.0));
+}
+
+/// [`draw_attribution`] `inset` points (from the bottom, from the right) in from the corner: above
+/// and left of what is drawn along those edges, such as a layout frame's grid labels.
+pub(crate) fn draw_attribution_inset(pm: &mut Canvas, attribution: &[String], ppp: f32, (bottom, right): (f32, f32)) {
     if attribution.is_empty() {
         return;
     }
     let text = attribution.join(" | ");
     let size = 9.0;
     let (w, h) = (pm.width() as f32 / ppp, pm.height() as f32 / ppp);
-    let tw = text::measure(&text, size, false).min(w);
+    let (bottom, right) = (bottom.clamp(0.0, h), right.clamp(0.0, w));
+    let tw = text::measure(&text, size, false).min(w - right);
     let label = PlacedLabel {
         text,
-        x: w - tw / 2.0 - 4.0,
-        y: h - size * 0.9,
+        x: w - right - tw / 2.0 - 4.0,
+        y: h - bottom - size * 0.9,
         size,
         color: Rgba::rgb(0x33, 0x33, 0x33),
         halo: Some(Rgba::rgb(0xFF, 0xFF, 0xFF)),
